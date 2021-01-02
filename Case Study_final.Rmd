@@ -1,0 +1,985 @@
+---
+title: "Linear and Generalized Linear Models"
+author: 'Ligaya Breemer & Iris Hoekstra '
+date: "30/12/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  bookdown::pdf_document: default
+abstract: This report contains our case study about the ShipAccidents dataset. We performed four analyses to try and explain the number of damage incidents from ship type, construction period, and operation period, using the aggregate number of service months as an offset. We reduced the number of factor levels of the construction variable and removed some influential points from our dataset in order to find the best model. We found that a quasi-Poisson model including type, construction period, and their interaction as predictors, and using service months as an offset, was the best.
+editor_options:
+  chunk_output_type: inline
+---
+All members of the case study group contributed equally.
+
+```{r setup, include=FALSE}
+library(car)
+library(tidyverse)
+library(AER)
+library(faraway)
+library(emmeans)
+library(knitr)
+library(bookdown)
+library(kableExtra)
+
+```
+
+# Introduction
+
+This report presents an analysis of a dataset of ship accidents. The dataset contains information about the number of damage incidents and aggregate number of service months for different kinds of ships. The ships are categorized according to three factors: the type of ship with 5 levels; the period in which the ship was constructed, with 4 levels; and the period during which the kind of ship operated, with 2 levels. The number of damage incidents will be described in terms of type, construction period, and operation period, and months of service was used as an offset variable for the number of incidents.
+
+# Exploring the data
+
+After the initial preparation of the dataset, it appeared that some ships were constructed *after* their operation period. This meant that those ships were not in service and thus did not have any incidents. It is unclear what this information meant in a practical sense, so these cases were left out of the analysis.
+To describe the data, some descriptives and frequencies were evaluated. When looking at the summary of our data we see that both of the numeric variables, incidents and service, have a noticeable difference between their mean and median, indicating that they are not symmetrically distributed. This was of no surprise, since both variables represent counts, which are generally Poisson distributed. 
+```{r, echo=F, fig.cap = "First"}
+# Make sure the file is in your working directory or use the AER package.
+data("ShipAccidents")
+
+# Clean up data.
+# ShipAccidents <- ShipAccidents[,-1] #remove ID column if necessary 
+ShipAccidents$type <- factor(ShipAccidents$type)
+ShipAccidents$construction <- factor(ShipAccidents$construction)
+ShipAccidents$operation <- factor(ShipAccidents$operation)
+# remove cases with 0 months of service
+ShipAccidents <- ShipAccidents[ShipAccidents$service>0,] 
+options(knitr.kable.NA = '')
+kbl(summary(ShipAccidents), booktabs = T)
+```
+The frequency table (Table 1) show that the design is unbalanced and quite a couple of cells are empty (necessarily so because some ships were built after 1974 and could not operate before then). This means that Type II or Type III tests needed to be used for our model rather than Type I tests, in this case Likelihood Ratio Tests. We will elaborate on this later.
+
+```{r, echo=F, fig.cap = "First"}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+#table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)
+
+freq12 <- cbind(table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)[,,1], table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)[,,2])
+
+add_header_above(kable_styling(kbl(freq12, booktabs = T, caption = "Frequencies of construction period and ship type by operation period"), latex_options = "HOLD_position"), c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+
+
+#kable_styling(kbl(table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)[,,1], booktabs = T, caption = "Frequencies of operation period 1960-1974"), latex_options = "HOLD_position")
+#kable_styling(kbl(table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)[,,2], booktabs = T, caption = "Frequencies of operation period 1970-1975"), latex_options = "HOLD_position")
+```
+
+To further investigate the distributions of the variables, some graphical displays were made. While taking a look at these figures, it is important to keep in mind that the total sample size and the group sizes were low. Because of this, individual cases may have a great influence on the distribution of the data and many points may be considered outliers by the measures used to create these plots.
+We started by looking at the histogram (Figure 1), which presents the number of damage incidents and suggests that the incidents are indeed Poisson distributed.
+
+```{r, echo =F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 2)
+ggplot(ShipAccidents) +
+  geom_histogram(aes(x=incidents), binwidth=5) +
+  labs(x="Number of Damage Incidents", y="Count", title="Distribution of Damage Incidents", caption="Figure 1: Histogram presenting the distribution of \ndamage incidents") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+```
+
+The next two figures show that ships of Type B generally have more months of service and more damage incidents. The differences between the other types are much smaller. The boxplot (Figure 2) indicates there might be a slight difference both in medians and variance between the groups. We found it interesting to look at these differences in the absence of Type B, since the difference in scale between Type B and the other types made it harder to spot differences on a smaller scale. 
+
+```{r, echo=F}
+ggplot(ShipAccidents, aes(x=type, y=incidents)) +
+  geom_boxplot() +
+  labs(x="Type of Ship", y="Damage Incidents", title="Distribution of Damage Incidents", caption="Figure 2: Distribution of damage incidents for each  \ntype of ship") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+ggplot(ShipAccidents, aes(x=service, y=incidents)) + 
+  geom_point(aes(color=type), alpha=0.6) + 
+  labs(x="Months of Service", y="Damage Incidents", title="Number of Damage Incidents", caption="Figure 3: Number of damage incidents by months \nof service") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+
+```
+
+Since type B has such large values, we removed type B to get a closer look at the other ships, see Figure 4. We observed that ships of type A and E have a higher median and more variation than ships of type C or D. Furthermore, the updated scatterplot (Figure 5) gives us a clearer image of the degree of variation between the smaller values.
+
+```{r, echo=F}
+ShipsnotB <- ShipAccidents[ShipAccidents$type!="B",]
+
+ggplot(ShipsnotB, aes(x=type, y=incidents)) +
+  geom_boxplot() +
+  labs(x="Type of Ship", y="Damage Incidents", title="Distribution of Damage Incidents", caption="Figure 4: Distribution of damage incidents for each \ntype of ship, excluding type B.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8,  hjust=0, face="italic"))
+
+ggplot(ShipsnotB, aes(x=service, y=incidents)) + 
+  geom_point(aes(color=type), alpha=0.6) + 
+  labs(x="Months of Service", y="Damage Incidents", title="Number of Damage Incidents", caption="Figure 5: Number of damage incidents by months \nof service and ship type, excluding type B.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+```
+
+Next, the relationship between construction period and incidents was graphically investigated. Figure 6 shows some indication of differences in distribution of damage incidents for the different construction periods. Particularly, there seem to be some differences in both medians (skewness) and dispersion.
+
+```{r, echo=F}
+ggplot(ShipAccidents, aes(x=construction, y=incidents)) +
+  geom_boxplot() +
+  labs(x="Construction Period", y="Damage Incidents", title="Distribution of Damage Incidents", caption="Figure 6: Distribution of damage incidents for each \nconstruction period.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+
+ggplot(ShipAccidents, aes(x=service, y=incidents)) + 
+  geom_point(aes(color=construction), alpha=0.6) + 
+  labs(x="Months of Service", y="Damage Incidents", title="Number of Damage Incidents", caption="Figure 7: Number of damage incidents by months \nof service for each construction period.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"), axis.text.x = element_text(size = 6.5), legend.text = element_text(size = 6),legend.title = element_text(size = 6))
+```
+
+Finally, we looked at some plots displaying the relationship between the number of damage incidents and the operation period. Here, Figure 8 shows that there is no indication of a median difference between the two operation periods, however there is a clear difference in dispersion, which is also visible in Figure 9. The distribution of damage incidents for ships operating between 1960 and 1974 is more dense around the median than the distribution for ships operating between 1975 and 1979. The sample sizes are rather small, though, (14 and 20, respectively) and their ranges are almost identical.
+
+```{r, echo=F}
+ggplot(ShipAccidents, aes(x=operation, y=incidents)) +
+  geom_boxplot() +
+  labs(x="Operation Period", y="Damage Incidents", title="Distribution of Damage Incidents", caption="Figure 8: distribution of damage incidents for each \noperation period.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"))
+
+ggplot(ShipAccidents, aes(x=service, y=incidents)) + 
+  geom_point(aes(color=operation), alpha=0.6) + 
+  labs(x="Months of Service", y="Damage Incidents", title="Number of Damage Incidents", caption="Figure 9: Number of damage incidents by months \nof service for each operation period.") +
+  theme(plot.title=element_text(size=10, face="bold"), plot.caption=element_text(size=8, hjust=0, face="italic"), axis.text.x = element_text(size = 6.5), legend.text = element_text(size = 6),legend.title = element_text(size = 6))
+```
+
+
+
+# Generalized linear models
+By looking at the descriptives of our data, we have seen that our response variable is a count following the Poisson distribution. This meant that we could not use a "normal" linear model, but we had to use a generalized linear model from the Poisson family, otherwise called a count regression. 
+A generalized linear model is used to examine different types of data, for example the count data which we see in our dataset. A generalized linear model (GLM) consist of three main components (Fox, 2016):
+
+1. Random component: This specifies the conditional distribution of explanatory variables in the model. Which is on our dataset, the Poisson distribution.
+2.	Linear predictor: A function of regressors: $\eta_i = \alpha + \beta_1X_{i1}+\beta_2X_{i2}+ ... + \beta_kX_{ik}$. The regressors $X_{ij}$ are prespecified functions of the explanatory variable and the structure of the linear predictor is the familiar structure of the linear model, which makes it easier to work with.
+3.	Link function: This link function g(.)transforms the expectation of the response variable to the linear predictor. $g(\mu_i) = \eta_i = \alpha + \beta_1X_{i1}+\beta_2X_{i2}+ ... + \beta_kX_{ik}$. For our Poisson distributed dataset, we use the log link function.
+
+Considering these components resulted in the following (effects) model, including all main effects and first-order interactions:
+
+$\log{\mu_{ijkl}} =\eta_i = \log(service_i) + \mu + \alpha_j + \beta_k + \gamma_l + \delta_{jk} + \zeta_{jl} + \theta_{kl}$  
+With $\mu$ the overall mean (or intercept);  
+$\alpha_j$ the effect for ship type $j$;  
+$\beta_k$ the effect for construction period $k$;  
+$\gamma_l$ the effect for operation period $l$;  
+and $\delta_{jk}$, $\zeta_{jl}$, and $\theta_{kl}$ the interaction effects.  
+
+## Deviance
+The residual deviance of a Poisson GLM is the difference between the fit of the saturated model (with all data points as separated explanatory variables), and the current model. Deviance can be used as a measurement of the goodness of fit, and can be used to compare nested models. 
+
+
+## (Over)dispersion
+If Y is Poisson distributed with mean $\mu>0$, then: $P(Y = y)= \frac{e^{-\mu}\mu^y}{y!}$, with $y = 0,1,2,...$. Since Y is a count variable, it is not possible to get values smaller than zero.
+According to the Poisson distribution, the $E(Y) = var(Y) = \mu$, meaning that the expectation and variance of a Poisson are both equal to the mean. So, we do not have a parameter that fits the variability, thus consequently we expect that the variability increases as the mean increases. If the observed variance is higher than the mean, this indicates that the data is overdispersed. If the observed variance is lower, our data is underdispersed. 
+The dispersion parameter ($\phi$) can be estimated using:  
+$\hat{\phi} = \frac{X^2}{n-p}=\frac{\sum_i(y_i-\hat{\mu_i})^2/\hat{\mu_i}}{n-p}$
+
+In the regular Poisson case we expect $\phi = 1$ which means the $\mu = var(Y)$. Overdispersion means that $\phi> 1$ and underdispersion means $\phi < 1$. 
+
+# Analysis 1
+
+In our dataset, the number of observed incidents is related to the size of the service period. For example, one ship category was only used for 63 months and another ship category for 44882 months, which highly influenced the number of incidents that could have happened. In order to correct for this in our model, we have performed a log transformation on the service variable and used this as our offset. To check whether the service parameter could indeed be used as an offset, we checked whether the estimated coefficient of service was 1. 
+
+```{r, echo=FALSE, include=F}
+mod_1 <-glm(incidents ~ log(service) + construction + operation + type, family = poisson,
+  data = ShipAccidents) 
+# since we only use cases with service>0 and the ratio largest to smallest value >5, there is no need to add a constant within the log transformation.
+summary(mod_1)
+```
+We saw that the estimated coefficient for months of service was almost 1 (0.906), which suggested that we could use service as a offset and that we were dealing with a rate model. Next up, we fitted a new model with service as an offset and checked whether there was a significant difference between the models. 
+A $\chi^2$-test comparing the old model ( service as variable) the new model (service as offset) showed us that there was no significant difference ($p = 0.3621$), further confirming that we could use service as offset variable.  
+```{r, echo=FALSE}
+mod_allvar <-glm(incidents ~ construction + operation + type, family = poisson,
+  data = ShipAccidents, offset = log(service))
+#anova(mod_1, mod_allvar, test="Chisq")
+```
+
+
+We were interested in finding out whether there are any first-order interactions between our predictors. This would be quite reasonable, since improvements in quality between construction periods might be different for the different types of ships (maybe they fixed many construction issues with ships of type A but not of type B), and 'newer' ships might be more popular than 'older' ships, which could explain an interaction between construction period and operation period. We fitted a model with all interactions and perform type II likelihood ratio tests (LRTs). We removed the non-significant terms one by one based on $p$-values and deviances. Only one of the interaction terms reduced the deviance significantly based on the type II LRTs (corrected for the other interactions), which was the interaction between type and construction.
+```{r, echo = F, include=F}
+mod_int <- glm(incidents ~ type + construction + operation + type:construction + type:operation + operation:construction,offset = log(service), family = poisson, data = ShipAccidents)
+Anova(mod_int)
+
+mod_int2 <- glm(incidents~type+construction+operation+type:construction + type:operation, family=poisson, offset=log(service), ShipAccidents)
+Anova(mod_int2)
+```
+
+```{r, echo=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+mod_int3 <- glm(incidents~type+construction+operation+type:construction, family=poisson, offset=log(service), ShipAccidents)
+mod_int3$call
+Anova(mod_int3)
+```
+
+To confirm and interpret our findings we made interaction plots, shown in Figures 10 through 12. In Figure 10, you can see an interaction effect between type and construction, which confirms what we found in the output. More specifically, we found that the difference between type B and the other ship types is mediated by construction period. For the newest ships, the differences in damage incidents between sip types are relatively small, whereas for ships built between 1965 and 1969 the differences are much more extreme. In Figure 11, you see no interaction between type and operation. In Figure 12 however, it seems that there is some interaction happening, but according to our model this was not significant ($p = 0.435103$). 
+
+```{r, warning=F,echo=F}
+interaction.plot(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$incidents, main = "Interaction type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$construction), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+title(sub= "Figure 10: Significant interaction between \ntype & construction", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+```{r, warning=F,echo=F}
+interaction.plot(ShipAccidents$type, ShipAccidents$operation, ShipAccidents$incidents,main = "Interaction type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue"), lwd = 2, trace.label = "Operation", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+title(sub= "Figure 11: No interaction between type & operation", font.sub=3, adj = 0, cex.sub = 0.6)
+interaction.plot(ShipAccidents$operation, ShipAccidents$construction, ShipAccidents$incidents,main = "Interaction operation & construction",ylab = "Mean of incidents", xlab = "Operation period", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction period", xpd = T, cex.main = 0.8, legend = F)
+legend("topleft", legend = c("1960-64", "1965-69","1970-74"), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.4, title = "construction")
+title(sub= "Figure 12: No interaction between \n operation & construction", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+
+```{r, echo = F, include=F}
+knitr::opts_chunk$set(fig.width = 4, fig.height = 3)
+summary(mod_int3)
+pchisq(sum(residuals(mod_int3, type="pearson")^2), mod_int3$df.residual, lower=FALSE)
+```
+Next up, we looked at the goodness-of-fit. The goodness-of-fit can be checked using Pearson's $\chi^2$, which is defined as the following:  
+$\chi^2=\sum_{i=1}^n\frac{(y_i-\hat{\mu_i})^2}{\hat{\mu_i}}$ with $y_i$ the observed counts, $\hat{\mu_i}$ the expected counts and $\chi^2\sim\chi_{n-p}^2$ under the null hypothesis that the model fits well. The null-hypothesis was not rejected, with $p=0.2329$.  
+We examined the deviance as well, and it looked good (deviance = 14.746  on 14  degrees of freedom), as did the deviances of the individual terms. The deviance was very close to the residual degrees of freedom, meaning there was no indication of overdispersion. The Wald-tests are almost exclusively insignificant, which might be due to our sparse data, which could have resulted in small z-values.
+We have also examined the deviance-$R^2$ of our model, which can be calculated by:  
+$R^2 = 1-\frac{deviance_{residual}}{deviance_{null}}$. 
+```{r, echo=F, include=F}
+1-(mod_int3$deviance/mod_int3$null.deviance)
+```
+Our $R^2_{Dev}$ = 0.899, which is quite high, meaning that this model fits well. 
+We selected this model and continued with the diagnostics.
+
+## Diagnostics
+Our diagnostics indicate how well our model fits the data and if there are any outliers, unusual observations, or if our data violates our assumptions.
+We first looked at the Pearson residuals, which are comparable to standardized residuals used for linear models. In Figure 13 you see one observation which might be an outlier, as it does not fall within two standard deviations from the mean. 
+Other than that, the Pearson residuals looked like they were spread out relatively evenly over the y-axis, which is good. Furthermore, Figure 14 shows that the predicted values were close to the observed values.
+```{r, echo=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+```
+
+```{r, echo = F}
+res.pears <- residuals(mod_int3, "pearson")
+plot(fitted(mod_int3), res.pears, main = "Index plot of Pearson residuals", ylim = c(-3,4), ylab = "Pearson residuals", xlab = "Fitted values", cex.main = 0.8)
+title(sub= "Figure 13: Pearson residual plot showing \none unsual observation", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(h = 2, col = "red")
+abline(h= -2, col = "red")
+
+plot(fitted(mod_int3), ShipAccidents$incidents, xlab = "Fitted values", ylab = "Observed values", main = "Predicted versus observed values", cex.main = 0.8) 
+abline(a = 0, b = 1)
+title(sub= "Figure 14: Predicted values plot showing all \npredicted values close to the line", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+We continued the diagnostics by looking at the half-norm and log-log plot. In the half-norm residual QQ-plot in Figure 15 we see that observations 19 and 20 might have been outliers. These points actually correspond to cases 21 and 22, because cases 7 and 15 have been removed when preparing the data. 
+According to the log-log plot, the variance was smaller than the mean. There also are two clear clusters of points that are very different from the other points. One of the clusters has fitted values close to zero (since their logs are close to -20) with even smaller variance (logs of -40), and the other cluster has a much smaller variance, almost zero (since their logs are close to -40), with predicted values larger than one it seems (positive log values). We were not interested in the first cluster, since the fitted values and errors are probably zero when rounded. The second cluster was more interesting to us. It could represent a well-defined cluster with characteristics that the model could accurately distinguish from other cases. 
+
+
+```{r, echo=F}
+halfnorm(residuals(mod_int3), main = "Halfnorm plot", cex.main = 0.8)
+title(sub= "Figure 15: Halfnorm plot showing 2 possible \noutliers", font.sub=3, adj = 0, cex.sub = 0.6)
+lev_1 <- influence(mod_int3)$coef #look at the leverage
+plot(log(fitted(mod_int3)), log((ShipAccidents$incidents-fitted(mod_int3))^2), xlab=expression(log(hat(mu))), ylab=expression(log((y-hat(mu))^2)), main ="Log-log plot", cex.main = 0.8)
+title(sub= "Figure 16: Log-log plot showing 3 clusters \nof observations", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(0,1)
+```
+
+Lastly, we looked at the Cook's distances and checked for multicollinearity. We found one clear influential point, case 22, which had a Cook's distance value of 2.60. This was an order of magnitude larger than the second largest distance. In this output we can see the 10 largest Cook's Distance points. We calculated the Cook's D cut-off point, which was:  
+$D_c > \frac{4}{n-k-1}=\frac{4}{\text{residual df}}= \frac{4}{14} = 0.28571$. 
+
+We found only one case which Cook's distance exceeded this point, which was case 22. 
+
+```{r, echo=F, include=F}
+cook_1 <- cooks.distance(mod_int3)
+round(sort(cook_1,decreasing=T),2)[1:10]
+```
+
+```{r, echo=F}
+plot(cook_1, ylab = "Cook's Distance", main = "Cook's D outlier plot", cex.main = 0.8)
+abline(h=0.28571, col="red", lty=1)
+title(sub= "Figure 17: Cook's Distance plot showing one clear \ninfluential point", font.sub=3, adj = 0, cex.sub = 0.6)
+#round(sort(cook_1,decreasing=T),2)[1:10]
+large <- cook_1[cook_1 > 0.28571]
+#sort(large[!is.na(large)], decreasing = T)
+```
+
+We checked for multicollinearity by calculating the generalized variance inflation factors. All of them were close to 1, which indicated no multicollinearity.
+```{r, echo=F}
+car::vif(mod_allvar)
+```
+
+So conclude, even though we saw some potential outliers on the halfnorm plot and the residuals, we do not see them as influential point by looking at the Cook's Distance. The only observation that stands out is case 22.
+
+## Interpretation
+Since we used dummy coding, our model would look rather large when written down in effect model notation or mean model notation, one might just as well look at the `R` output provided earlier. To aid interpretation, we created a table (Table 2) with coefficients for each individual ship category, i.e. each combination of type, construction period, and operation period, and including the intercept:
+```{r, echo=F}
+betas <- mod_int3$coefficients
+betas[is.na(betas)] <- 0
+T2 <- table(ShipAccidents$type, ShipAccidents$construction, ShipAccidents$operation)
+T2[1,1,1] <- betas[1] # intercept, which is also the reference category
+T2[1,1,2] <- T2[1,1,1] + betas[9]
+# Getting the first column for both tables
+for(i in 2:5){
+  T2[i,1,1] <- betas[1] + betas[i] 
+}
+# getting the rest of the values for the first row of each table
+for(j in 2:4){
+  T2[1,j,1] <- T2[1,1,1] + betas[j+4]
+}
+# now for the complicated part, where we include interactions
+for(j in 2:4){
+  for(i in 2:5){
+    T2[i,j,1] <- T2[i,1,1] + betas[j+4] + betas[i+4*j]
+  }}
+for(j in 1:4){
+  for(i in 1:5){
+    T2[i,j,2] <- T2[i,j,1] + betas[9]
+  }}
+
+T2[,4,1] <- NA # adjusting because ships built in 1975-79 cannot operate between 1960-74
+#round(T2,2)
+
+
+Ship <- c("A", "B", "C", "D", "E")
+T_2 <- cbind(round(T2[,,1],2),Ship,round(T2[,,2],2))
+T.2 <-cbind(round(T2[,,1],2),round(T2[,,2],2))
+
+options(knitr.kable.NA = '')
+#kable_styling(kbl(round(T2,2)[,,1], booktabs = T, caption = "Estimated beta 1960-1974"), latex_options = "HOLD_position")
+#kable_styling(kbl(round(T2,2)[,,2], booktabs = T, caption = "Estimated beta 1975-1979"), latex_options = "HOLD_position")
+
+T.2 <-cbind(round(T2[,,1],2),round(T2[,,2],2))
+add_header_above(kable_styling(kbl(T.2, booktabs = T, caption = "Estimated sum of coefficients"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+```
+The table should be read as follows: for a ship of type A, constructed between 1960 and 1964, and which operated between 1960 and 1974, the expected value of damage incidents was:
+$e^{\log{service}-\beta_{111}}=e^{\log{service}-23.99}=\frac{service}{e^{23.99}}$. Since the maximum observed value of aggregate service months was 44882, which is much smaller than   $e^{23.99}\approx2.62*10^{10}$, the expected value was approximately zero, which matches the observed value. For a ship of type A, constructed between 1965 and 1969, which operated between 1960 and 1974, the expected number of incidents was $e^{\log{service}-\beta_{121}}=e^{\log{service}-5.96}=\frac{service}{e^{5.96}}$. We have observed 1095 service months, so the predicted value was $\frac{1095}{e^{5.96}}\approx3$ (rounded to whole numbers since incidents is discrete), which also matches our data.  
+You can immediately see that some categories got an expected value of zero regardless of the number of service months, since their coefficients were relatively extreme (in the sense that they result in extreme denominators in the formula shown above). Another observation is that a column is missing in the first table, necessarily so, because ships built between 1975 and 1979 could not have operated between 1960 and 1974.  
+Table 3 present the predicted values for the number of incidents for each category of ship. In this table you can see that we predicted a ship from type A, which was built between 1960-1974 and operated between 1960-1964 to have no incidents. We predicted that a ship of type B, which was built and operated during the same period as the previous example, has 44 incidents.
+
+```{r, echo = F, include=F}
+ShipTest <- ShipAccidents
+ginv <- mod_int2$family$linkinv  ## inverse link function
+prs <- predict(mod_int3, ShipTest, type = "link", se.fit=TRUE)
+ShipTest$predicted <- round(ginv(prs[[1]]),4)
+ShipTest$lower <- round(ginv(prs[[1]] - 1.96 * prs[[2]]),4)
+ShipTest$upper <- round(ginv(prs[[1]] + 1.96 * prs[[2]]),4)
+```
+
+```{r,echo = F,result = 'asis'}
+table1 <- tapply(ShipTest$predicted, list(ShipTest$type, ShipTest$construction, ShipTest$operation), mean)
+#as.table(round(table1))[,,1]
+
+options(knitr.kable.NA = '')
+#kable_styling(kbl((round(table1))[,,1], booktabs = T, caption = "Predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((round(table1))[,,2], booktabs = T, caption = "Predicted number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+TP1 <-cbind(round(table1[,,1],2),round(table1[,,2],2))
+add_header_above(kable_styling(kbl(TP1, booktabs = T, caption = "Predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+```
+
+We compared our predicted values to the observed values and the differences can be found in the tables below (Table 4). Approximately two thirds of the predictions were correct (after rounding the residuals to whole numbers). We can also see that the residuals were higher for ships of type B. As we have seen in Figure 1, these ships had more incidents than the other ships. For a Poisson distributed variable, the variation is proportional to the mean, such that groups of cases with more damage incidents are likely to have a larger error when we try to predict them. 
+
+```{r,echo = F}
+table_real <- tapply(ShipTest$incidents, list(ShipTest$type, ShipTest$construction, ShipTest$operation), mean)
+#as.table((table_real - table1))[,,2]
+options(knitr.kable.NA = '')
+R2 <- cbind((table_real -table1)[,,1], (table_real -table1)[,,2])
+#kable_styling(kbl((table_real -table1)[,,1], booktabs = T, caption = "Difference observed - predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((table_real -table1)[,,2], booktabs = T, caption = "Difference observed - predicted  number of incidents 1975-1979"), latex_options = "HOLD_position")
+add_header_above(kable_styling(kbl(R2, booktabs = T, caption = "Difference between observed and predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+
+```
+
+Lastly, we calculated the confidence intervals around our predicted values. These 95% confidence intervals can be found in Appendix A. The method we chose was to manually transform the values using the inverse link function. The advantage of this is that we get no confidence intervals containing negative values. A drawback, however, is that the predictions with value zero have no upper bound, due to inflated standard errors.
+
+
+# Analysis 2: without outliers 
+
+After having looked at the results and diagnostics we decided to investigate the effect of leaving out the large influential observation we found. We decided to exclude the case (22) from out dataset, which had a Cook's Distance much larger than the cut off point ($D_{22}=2.56$), and also much larger than the Cook's Distances of the other cases. These were the observed values for case 22:
+ 
+```{r, echo = FALSE}
+kbl(ShipAccidents[20,], booktabs= T) #index adjusted because cases 7 and 15 are missing.
+Ship_out <- ShipAccidents[-20,] #remove the outlier.
+```
+
+Next, we repeated the entire process again. We initially found that the same model may be used as before. However, the residual deviance was much lower than the degrees of freedom, so we tested for underdispersion. The dispersion parameter was taken to be $\phi = 0.184$.  We rejected the null hypothesis ($p<0.001$), which meant we were dealing with underdispersion. To fix this issue we fitted a quasi-Poisson model with all main effects and interaction terms. Non-significant terms were removed one by one based on their $p$-values and in accordance with the Principle of Marginality. We ended up with our final model including all main effects: type, construction, and operation (all with $p <0.001$) and we included the interaction between type and construction ($p <0.001$ ) and between construction and operation ($p = 0.0418$). So, only the interaction between type and operation period was removed ($p = 0.69$). 
+A Pearson's $\chi^2$-test was performed on our final model and the null hypothesis that the model fits well was accepted ($p=0.998$). We also found that $R^2_{Dev}=0.983$, which meant our model fitted very well.
+
+The interaction plots look similar to those we have seen before for our previous analysis, we therefore included them in an appendix, see Appendix B. Figure 18 shows the interaction between construction and operation period, which was significant in this analysis but not in our first one. It makes sense that our models are similar, since we only removed one observation. According to our model, the strongest interaction was between the different ship types and construction periods. 
+
+
+```{r, echo = F, include=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+# Offset?
+mod_out1 <-glm(incidents ~ log(service) + construction + operation + type, family = poisson, data = Ship_out)
+summary(mod_out1)$coefficients
+
+mod_outall <-glm(incidents ~ construction + operation + type, family = poisson,
+  data = Ship_out, offset = log(service))
+mod_outall$call
+ anova(mod_out1, mod_outall, test="Chisq")
+ dispersiontest(mod_out1)
+
+# Additive model 
+Anova(mod_outall)
+
+# Interaction model
+mod_outint <- glm(incidents ~ type + construction + operation + type:construction + type:operation + operation:construction,offset = log(service), family = poisson, data = Ship_out)
+mod_outint$call
+Anova(mod_outint)
+summary(mod_outint)
+dispersiontest(mod_outint, alternative="less")
+
+# quasi-poisson
+mod_outq <- glm(incidents ~ type + construction + operation + type:construction + type:operation + operation:construction,offset = log(service), family = quasipoisson, data = Ship_out)
+summary(mod_outq)
+Anova(mod_outq, test="F")
+
+mod_outq2 <- glm(incidents ~ type + construction + operation + type:construction + operation:construction,offset = log(service), family = quasipoisson, data = Ship_out)
+Anova(mod_outq2, test="F")
+summary(mod_outq2)
+
+1-mod_outq2$deviance/mod_outq2$null.deviance
+pchisq(sum(residuals(mod_outq2, type="pearson")^2), mod_outq2$df.residual, lower=FALSE)
+
+```
+
+```{r,echo=F, warning=F, include = F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+interaction.plot(Ship_out$type, Ship_out$construction, Ship_out$incidents, main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$construction), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+
+interaction.plot(Ship_out$type, Ship_out$operation, Ship_out$incidents, main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Operation", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
+
+```{r, echo =F}
+interaction.plot(Ship_out$operation, Ship_out$construction, Ship_out$incidents , main = "Interaction plot operation & construction",ylab = "Mean of incidents", xlab = "Operation period", col = c("red", "blue", "green"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("topleft", legend = c("1960-64", "1965-69","1970-74"), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+title(sub= "Figure 18: Interaction plot showing \n significant interaction ", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+## Diagnostics
+We started by looking at our Pearson residuals (Figure 19). Interestingly, we now see that all residuals are within one standard deviation from the mean.  Removing the outlier thus had a strong influence on how well our model fitted the data. In Figure 20 we see that all cases are on or close to the line, which suggests a good fit as well.
+
+```{r, echo = F}
+res.pears2 <- residuals(mod_outq2, "pearson")
+plot(fitted(mod_outq2), res.pears2, main = "Index plot of Pearson residuals",ylab = "Pearson Residuals", xlab = "Fitted values", ylim = c(-3,3), cex.main = 0.8)
+title(sub= "Figure 19: Pearson residual plot showing \nno indication of outliers", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(h = 2, col = "red")
+abline(h= -2, col = "red")
+plot(fitted(mod_outq2), Ship_out$incidents, ylab = "Observed values", xlab = "Predicted values", main ="Predicted versus observed values", cex.main = 0.8)
+title(sub= "Figure 20: Predicted values plot showing good fit of the model", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(a = 0, b = 1)
+```
+
+Furthermore, we looked at the half-norm plot (Figure 21) and saw that point 17, and possibly point 18, might have been outliers if only looked at the graph. But when we checked the y-axis we saw the highest value is around 0.9, which is still good, since we want our Pearson-residuals to be smaller than 2. In the log-log plot (Figure 22) we found a similar pattern as before, with two clusters quite far removed from the line and all points below the line.
+
+```{r, echo=F}
+halfnorm(residuals(mod_outq2), main = "Half-norm plot", cex.main = 0.8)
+title(sub= "Figure 21: Half-norm plot showing no \nabnormalities", font.sub=3, adj = 0, cex.sub = 0.6)
+plot(log(fitted(mod_outq2)), log((Ship_out$incidents-fitted(mod_outq2))^2), xlab=expression(log(hat(mu))), ylab=expression(log((y-hat(mu))^2)), main= "Log-log plot", cex.main = 0.8)
+title(sub= "Figure 22: Log-log plot indicating 3 clusters \nof observations", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(0,1)
+```
+
+Lastly, we looked at the Cook's Distance again to look for influential observations. The cut-off point for the Cook's distance was: $D_c > \frac{4}{n-k-1}= \frac{4}{11} = 0.364$. We found three points that exceeded this cut-off point. This indicated that those points were influential points in our data. The plot with predicted versus observed values showed that this most likely did not have a negative effect on the fit of our model, though, since all predicted values lay on or close to the line.
+
+
+```{r, echo=F, include=F}
+cook_2 <- cooks.distance(mod_outq2)
+round(sort(cook_2,decreasing=T),2)[1:10]
+```
+
+```{r, echo=F}
+plot(cook_2, ylab = "Cook's Distance", main = "Cook's D outlier plot", cex.main = 0.8)
+abline(h = 0.364, col = "red")
+title(sub= "Figure 23: Cook's Distance plot indicating \n3 influential points", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+
+## Interpretation
+Finally, we interpreted the results of our model. Table 5 shows the estimated coefficients, which can be interpreted the same way as the coefficients of the previous analysis. The coefficients were similar to those of the first analysis, tough the extreme coefficients were slightly more extreme for this analysis.
+
+```{r, echo=F}
+# this table is slightly more complicated than the other one, since there are more interactions present.
+betas <- mod_outq2$coefficients
+betas[is.na(betas)] <- 0
+T3 <- table(Ship_out$type, Ship_out$construction, Ship_out$operation)
+T3[1,1,1] <- betas[1] # intercept, which is also the reference category
+T3[1,1,2] <- T3[1,1,1] + betas[9]
+# Getting the first column for both tables
+for(i in 2:5){
+  T3[i,1,1] <- betas[1] + betas[i] 
+}
+for(i in 2:5){
+  T3[i,1,2] <- T3[i,1,1] + betas[9]
+}
+# getting the rest of the values for the first row of each table
+for(j in 2:4){
+  T3[1,j,1] <- T3[1,1,1] + betas[j+4]
+}
+for(j in 2:4){
+  T3[1,j,2] <- T3[1,1,2] + betas[j+4] + betas[j+20]
+}
+# the rest of the first table
+for(j in 2:4){
+  for(i in 2:5){
+    T3[i,j,1] <- T3[i,1,1] + betas[j+4] + betas[i+4*j]
+  }}
+# here it gets a little different again because of the construction:operation interactions.
+for(j in 2:4){
+  for(i in 2:5){
+    T3[i,j,2] <- T3[i,j,1] + betas[9] + betas[j+20]
+  }}
+T3[,4,1] <- NA # adjusting because ships built in 1975-79 cannot operate between 1960-74
+
+#round(T3,2)
+
+#kable_styling(kbl(round(T3,2)[,,1], booktabs = T, caption = "Estimated beta 1960-1974"), latex_options = "HOLD_position")
+#kable_styling(kbl(round(T3,2)[,,2], booktabs = T, caption = "Estimated beta 1975-1979"), latex_options = "HOLD_position")
+
+
+T.3 <-cbind(round(T3[,,1],2),round(T3[,,2],2))
+add_header_above(kable_styling(kbl(T.3, booktabs = T, caption = "Estimated sums of coefficient"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+
+```
+
+```{r, echo = F, include=F}
+ShipTest2 <- Ship_out
+ginv2 <- mod_outq2$family$linkinv  ## inverse link function
+prs2 <- predict(mod_outq2, ShipTest2, type = "link", se.fit=TRUE)
+ShipTest2$predicted <- round(ginv2(prs2[[1]]),4)
+ShipTest2$lower <- round(ginv2(prs2[[1]] - 1.96 * prs2[[2]]),4)
+ShipTest2$upper <- round(ginv2(prs2[[1]] + 1.96 * prs2[[2]]),4)
+ShipTest2[,c(6:8)]
+```
+
+In Table 6 we see the table of predicted values of the number of incidents, structured by ship type, construction period and operation period. We can see, for example, that we expected a ship of type A, which was built in 1960-1964 and operated between 1960-1974 to have no incidents. But for a ship of type B, which was built during the same time and operated in the same time, we expected to have 39 accidents.  
+The differences between the real values and the predicted values are presented in Table 7. We immediately noticed that the predicted values were more accurate, since the differences were smaller. This is what we expected as well, since the fit of our model improved.  
+Lastly, the confidence intervals for the predicted values may again be found in Appendix A.
+
+```{r,echo = F,result = 'asis'}
+table2 <- tapply(ShipTest2$predicted, list(ShipTest2$type, ShipTest2$construction, ShipTest2$operation), mean)
+#as.table(round(table2))
+
+P.2 <-cbind(round(table2[,,1],2),round(table2[,,2],2))
+
+add_header_above(kable_styling(kbl(P.2, booktabs = T, caption = "Predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+
+#kable_styling(kbl((round(table2))[,,1], booktabs = T, caption = "Predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((round(table2))[,,2], booktabs = T, caption = "Predicted number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+```   
+
+```{r,echo = F}
+table_real <- tapply(ShipTest2$incidents, list(ShipTest2$type, ShipTest2$construction, ShipTest2$operation), mean)
+
+R.2 <-cbind((table_real -table2)[,,1],(table_real -table2)[,,2])
+add_header_above(kable_styling(kbl(R.2, booktabs = T, caption = "Difference between observed and predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =4, "Operation 1975-1979" = 4))
+
+#kable_styling(kbl((table_real -table2)[,,1], booktabs = T, caption = "Difference observed - predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((table_real -table2)[,,2], booktabs = T, caption = "Difference observed - predicted  number of incidents 1975-1979"), latex_options = "HOLD_position")
+```
+
+# Analysis 3: Reducing construction
+So far we have two models with many parameters but only a few observations. This is not ideal, since the goal of our case study is to explain the number of damage incidents in a model that is accurate, yet simple. Therefore, we decided to collapse the construction period variable into 2 levels instead of 4. We now have a group from 1960-1969 and a group from 1970-1979. Since we had found a significant interaction between type and construction period in our first two analyses, we expected that reducing the number of levels for construction period would greatly increase our degrees of freedom. Furthermore, it made mores sense to reduce the number of levels for this factor than for the others. Operation period already only had two levels, and the grouping of years used to create the factor levels (for construction period) in the first place was rather arbitrary. Besides, reducing the number of levels for ship type would have inevitably resulted in unequal group sizes.
+```{r, echo = F, include=F}
+ShipAccidents2 <- ShipAccidents
+ShipAccidents2$construct2 <- "1960-69"
+ShipAccidents2$construct2[ShipAccidents$construction == "1970-74"] <- "1970-79"
+ShipAccidents2$construct2[ShipAccidents$construction == "1975-79"] <- "1970-79"
+
+mod_combi <-glm(incidents ~ log(service) + construct2 + operation + type, family = poisson, data = ShipAccidents2)
+summary(mod_combi)$coefficients
+
+mod_combiall <-glm(incidents ~ construct2 + operation + type, family = poisson,
+  data = ShipAccidents2, offset = log(service))
+ anova(mod_combiall, mod_combi, test="Chisq")
+```
+The first thing we noticed is that the estimated coefficient of service went down a bit to 0.83, but we found that our model did not differ significantly to the model where we included service as an offset ($p=0.08$), so we used the offset. 
+```{r, echo=F, include=F}
+mod_combiint <- glm(incidents ~ type + construct2 + operation + type:construct2 + type:operation + operation:construct2, offset = log(service), family = poisson, data = ShipAccidents2)
+Anova(mod_combiint)
+
+mod_combiint2 <- glm(incidents ~ type + construct2 + operation + type:construct2 + type:operation, offset = log(service), family = poisson, data = ShipAccidents2)
+Anova(mod_combiint2)
+```
+This time we found significant effects of type ($p = <0.001$), construction ($p = 0.0306$), operation ($p = 0.0046$) and the interaction between type and construction ($p=0.0056$). We started by removing the interaction between construction period and operation period as it had the lowest deviance ($D=0.238$). We found that the interaction between type and operation period was still not significant ($p=0.13$), so we excluded this term as well. The deviance of our model was 47.13, which is much higher than the deviances of our previous analyses (14.746 and 2.473, respectively). We had an adequate $R^2_{Dev}=0.68$, though. However, a Pearson's $\chi^2$-test rejected the null hypothesis that the model fits well ($p=0.001$). Despite the seemingly large difference between our deviance and the degrees of freedom, the dispersion test was not significant with p = $0.096$. We then looked at the diagnostics to see whether there were any signs of outliers, influential points, or (multi)collinearity that could explain the lack in fit.
+
+Interestingly, when looking at the interaction plot in Figure 24, we found an indication that there might be an interaction between construction period and operation period, even though this term had the lowest deviance in our full model. This difference might be caused by the fact that the interaction plots did not control for the other variables present in the model. The other interaction plots can again be found in Appendix B.
+
+```{r, echo=F, include=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 4)
+mod_combiint3 <- glm(incidents ~ type + construct2 + operation + type:construct2, offset = log(service), family = poisson, data = ShipAccidents2)
+mod_combiint3$call
+Anova(mod_combiint3)
+dispersiontest(mod_combiint3)
+summary(mod_combiint3)
+1-mod_combiint3$deviance/mod_combiint3$null.deviance
+pchisq(sum(residuals(mod_combiint3, type="pearson")^2), mod_combiint3$df.residual, lower=FALSE)
+```
+
+
+```{r,echo=F, include=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+ShipAccidents2$construct2 <- as.factor(ShipAccidents2$construct2)
+interaction.plot(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$incidents,  main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents2$construct2), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+interaction.plot(ShipAccidents2$type, ShipAccidents2$operation, ShipAccidents2$incidents, main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Operation", xpd = T, cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
+
+```{r, echo=F}
+interaction.plot(ShipAccidents2$operation, ShipAccidents2$construct2, ShipAccidents2$incidents, main = "Interaction plot operation & construction",ylab = "Mean of incidents", xlab = "Operation period", col = c("red", "blue"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("bottomright", legend = c("1960-69", "1970-79"), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+title(sub= "Figure 24: Plot showing some interaction, \nbut not significant", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+
+## Diagnostics 
+We looked at the diagnostics again. First of all, Figure 25 shows there were 4 Pearson residuals outside the two standard deviation range, which might suggest we have some outliers. When we looked at the predicted versus observed values plot in Figure 26, we found some observations quite far from the line as well. Especially the higher values seemed to fit less well.
+
+```{r, echo = F}
+res.pears3 <- residuals(mod_combiint3, "pearson")
+plot(fitted(mod_combiint3), res.pears3, main = "Index plot of Pearson residuals",ylab = "Pearson Residuals", xlab = "Fitted values", ylim = c(-3,4), cex.main = 0.8)
+abline(h = 2, col = "red")
+abline(h= -2, col = "red")
+title(sub= "Figure 25: Pearson residual plot indicating some outliers", font.sub=3, adj = 0, cex.sub = 0.6)
+
+plot(fitted(mod_combiint3), ShipAccidents2$incidents, ylab = "Observed values", xlab = "Predicted values", main ="Predicted values versus observed values", cex.main = 0.8)
+abline(a = 0, b = 1)
+title(sub= "Figure 26: Plot shows less accurate fit of \n the model for larger values", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+In our half-norm plot (Figure 27) we saw 2 values which might be outliers, but if we carefully look at the scale of the y-axis it seems that there are more values exceeding the 2 standard deviations of the Pearson residuals. This is in accordance to our findings in Figure 25.
+When we looked at our log-log plot (Figure 28), we noticed only 2 clusters, where before we noticed 3 clusters. This seemed to be an improvement since more values were close to the line. We also saw that there were more values above the line than before, which indicated that the mean and variance were more similar. 
+
+```{r, echo=F}
+halfnorm(residuals(mod_combiint3), main = "Half-norm plot", cex.main = 0.8)
+title(sub= "Figure 27: Plot indicates quite some outliers", font.sub=3, adj = 0, cex.sub = 0.6)
+
+plot(log(fitted(mod_combiint3)), log((ShipAccidents2$incidents-fitted(mod_combiint3))^2), xlab=expression(log(hat(mu))), ylab=expression(log((y-hat(mu))^2)), main= "Log-log plot", cex.main = 0.8)
+abline(0,1)
+title(sub= "Figure 28: Log-log plot with 2 clusters \nof observations", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+ 
+Furthermore, we looked at the Cook's Distance for influential points. We calculated the cut-off point $D_c=4/23 = 0.173913$. We found more influential points for this models, with 7 points exceeding our cut-off point. These points corresponded to the 7 points with the highest residuals as well.  
+
+```{r, echo=F}
+cook_3 <- cooks.distance(mod_combiint3)
+sort(cook_3[cook_3 > 0.173913], decreasing = T)[1:7]
+plot(cook_3, ylab = "Cook's Distance", main = "Cook's D outlier plot", cex.main = 0.8)
+abline(h = 0.173913, col = "red")
+title(sub= "Figure 29: Cook's Distance plot showing \nmany influential points", font.sub=3, adj = 0, cex.sub = 0.6)
+
+```
+
+Finally, we checked for (multi)collinearity again, since we changed the factor levels of the construction variable. Again, we found no indication of (multi)collinearity, with the highest generalized $VIF=1.48$.
+```{r, echo=F}
+kbl(car::vif(mod_combiall), booktabs = T)
+```
+
+## Interpretation
+First of all, we examined the tables with the estimated coefficients (Table 8). These tables are interpreted the same way as the previous coefficient tables. One important difference to note is that because construction period now has two levels, we could not account for the ship categories that were constructed after the operation period. In the other coefficient tables we were able to remove those coefficients. Needless to say this is not possible anymore now that ships built between 1970 and 1979 have all been coerced to one level. One consequence of reducing the number of levels of the construction variable was that there were fewer extreme coefficients. In the tables we only saw two extreme values, as opposed to eight.
+```{r, echo=F}
+betas <- mod_combiint3$coefficients
+betas[is.na(betas)] <- 0
+T4 <- table(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$operation)
+T4[1,1,1] <- betas[1] # intercept, which is also the reference category
+T4[1,1,2] <- T4[1,1,1] + betas[9]
+# Getting the first column for the first table
+for(i in 2:5){
+  T4[i,1,1] <- betas[1] + betas[i] 
+}
+# Second column first table
+T4[1,2,1] <- T4[1,1,1] + betas[6]
+for(i in 2:5){
+  T4[i,2,1] <- T4[i,1,1] + betas[6] + betas[6+i]
+}
+# Second table
+for(i in 1:5){
+  for(j in 1:2){
+    T4[i,j,2] <- T4[i,j,1] + betas[7]
+  }
+}
+#round(T4,2)
+
+
+T.4 <-cbind(round(T4[,,1],2),round(T4[,,2],2))
+add_header_above(kable_styling(kbl(T.4, booktabs = T, caption = "Estimated sums of coefficients"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+
+
+#kable_styling(kbl(round(T4,2)[,,1], booktabs = T, caption = "Estimated beta 1960-1974"), latex_options = "HOLD_position")
+#kable_styling(kbl(round(T4,2)[,,2], booktabs = T, caption = "Estimated beta 1975-1979"), latex_options = "HOLD_position")
+
+```
+Table 9 presents the crosstabulations containing the predicted values. We noticed nothing unusual here. More interestingly, we can look at Table 10 which shows the differences between the predicted values and the observed values. The table reflects what we found earlier in Figures 25 and 26, namely that the residuals for this analysis were larger than for our first two analyses. We only got correct predictions for about half of the categories. However, we also noticed that the errors or residuals were quite small compared to our very first analysis, as becomes evident when comparing Table 4 to Table 10.  
+The 95% confidence intervals for the predicted values can be found in Appendix A again. 
+
+```{r, echo=F, include=F}
+ginv3 <- mod_combiint3$family$linkinv  ## inverse link function
+prs3 <- predict(mod_combiint3, ShipAccidents2, type = "link", se.fit=TRUE)
+ShipAccidents2$predicted <- round(ginv3(prs3[[1]]),4)
+ShipAccidents2$lower <- round(ginv3(prs3[[1]] - 1.96 * prs3[[2]]),4)
+ShipAccidents2$upper <- round(ginv3(prs3[[1]] + 1.96 * prs3[[2]]),4)
+ShipAccidents2[,c(7:9)]
+```
+
+```{r, echo=F}
+table3 <- tapply(ShipAccidents2$predicted, list(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$operation), mean)
+#as.table(round(table3))
+
+P.3 <-cbind(round(table3[,,1],2),round(table3[,,2],2))
+add_header_above(kable_styling(kbl(P.3, booktabs = T, caption = "Predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+
+#kable_styling(kbl((round(table3))[,,1], booktabs = T, caption = "Predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((round(table3))[,,2], booktabs = T, caption = "Predicted number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+table_real3 <- tapply(ShipAccidents2$incidents, list(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$operation), mean)
+
+
+D.3 <-cbind((table_real3 -table3)[,,1],(table_real3 -table3)[,,2])
+add_header_above(kable_styling(kbl(D.3, booktabs = T, caption = "Difference between observed and predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+#as.table((table_real3 - table3))
+#kable_styling(kbl((table_real3 -table3)[,,1], booktabs = T, caption = "Difference observed - predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((table_real3 -table3)[,,2], booktabs = T, caption = "Difference observed - predicted  number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+```
+
+# Analysis 4: without outliers
+
+We wanted to improve the fit slightly, however we did not want to remove too many points because we had a small dataset already. We decided to remove the 3 datapoints (10% of our dataset) with the highest Cook's D. These were the following observations: 
+```{r, echo= F}
+#sort(abs(res.pears3), decreasing = T)[1:3]
+kbl(ShipAccidents2[c(8,20,28),-c(2,7,8,9)], booktabs = T)
+Ship3 <- ShipAccidents2[-c(8,20,28),-c(2,7,8,9)] #removed construction and CI +predicted values
+```
+
+```{r, echo = F, include=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+# Offset?
+out_1 <-glm(incidents ~ log(service) + construct2 + operation + type, family = poisson, data = Ship3)
+summary(out_1 )$coefficients
+out_all <-glm(incidents ~ construct2 + operation + type, family = poisson,
+  data = Ship3, offset = log(service))
+out_all$call
+ anova(out_all, out_1, test="Chisq")
+```
+We fitted a new model with all the main effects to see whether we could use service as offset again. We found that the coefficient of log(service) was 1.179. A $\chi^2$-test showed us that service months may be used as an offset, since the models did not differ significantly ($p =0.1408$). 
+After a process of backwards elimination, we found one significant interaction, which is between type and construction (p = $<0.001$), and we found that the main effect of operation period was no longer significant. When we checked for overdispersion we found a small and significant dispersion parameter ($\phi = 0.724, p = 0.029$) which means we had underdispersion. We therefore fitted a quasi-Poisson model and repeated the process of backwards elimination. Again, we found the interaction between type and construction to be significant ($p < 0.001$), however we also had all significant main effects now. Our model had a deviance $R^2$ of $0.84$ and a Pearson's $\chi^2$ of $0.94$, which indicated that our model fitted the data well. 
+```{r, echo = F, include=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3) 
+
+out_int <- glm(incidents ~ type + construct2 + operation + type:construct2 + type:operation + operation:construct2, offset = log(service), family = poisson, data = Ship3)
+Anova(out_int)
+
+out_int2 <- glm(incidents ~ type + construct2 + operation + type:construct2 + operation:construct2, offset = log(service), family = poisson, data = Ship3)
+Anova(out_int2)
+
+out_int3 <- glm(incidents ~ type + construct2 + operation + type:construct2, offset = log(service), family = poisson, data = Ship3)
+Anova(out_int3)
+
+out_int4 <- glm(incidents ~ type + construct2 + type:construct2, offset = log(service), family = poisson, data = Ship3)
+Anova(out_int4)
+summary(out_int4)
+dispersiontest(out_int4, alternative="less")
+
+# quasi-poisson
+outq <- glm(incidents ~ type + construct2 + operation + type:construct2 + type:operation + operation:construct2, offset = log(service), family = quasipoisson, data = Ship3)
+Anova(outq, test="F")
+
+outq2 <- glm(incidents ~ type + construct2 + operation + type:construct2 + operation:construct2, offset = log(service), family = quasipoisson, data = Ship3)
+Anova(outq2, test="F")
+
+outq3 <- glm(incidents ~ type + construct2 + operation + type:construct2, offset = log(service), family = quasipoisson, data = Ship3)
+Anova(outq3, test="F")
+
+knitr::opts_chunk$set(fig.width = 3, fig.height = 4)
+1-outq3$deviance/outq3$null.deviance
+pchisq(sum(residuals(outq3, type="pearson")^2), outq3$df.residual, lower=FALSE)
+```
+
+We examined our interaction plots again and noticed that the interaction between type and construction, and type and operation, did not change much compared to Analysis 3. These figures can be found in Appendix B. However, we did find a difference when plotting the operation and construction interaction (Figure 30). In Figure 24 we noticed that the lines were not parallel and even going in opposite directions, indicating a strong interaction. In this analysis, however, we observed (in Figure 30) that only the strength of the effect seemed to vary for different construction periods and there was no significant interaction at play. Apparently, we have removed cases which influenced this interaction. 
+
+```{r, echo = F, include = F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+interaction.plot(Ship3$type, Ship3$construct2, Ship3$incidents,  main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents2$construct2), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+
+interaction.plot(Ship3$type, Ship3$operation, Ship3$incidents,  main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue"), lwd = 2, trace.label = "Operation", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
+
+
+```{r, echo = F}
+interaction.plot(Ship3$operation, Ship3$construct2, Ship3$incidents,  main = "Interaction plot operation & construction",ylab = "Mean of incidents", xlab = "Operation period", col = c("red", "blue"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("topleft", legend = c("1960-69","1970-79"), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+title(sub= "Figure 30: Different pattern in interaction plot \ncompared to previous analyses", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+## Diagnostics 
+We investigated the diagnostics of the fourth analysis using the same procedure as before. In Figures 31 and 32 you see that this model fitted much better than the previous one. All Pearson residuals fell within two standard deviations from zero and in general the predicted values were closer to the observed values. We still noticed that the residuals were higher for higher numbers of incidents, which was expected considering that we were working with a Poisson model. 
+
+```{r, echo = F}
+res.pears4 <- residuals(outq3, "pearson")
+plot(fitted(outq3), res.pears4, main = "Index plot of Pearson residuals",ylab = "Pearson Residuals", xlab = "Fitted values", ylim = c(-3,4), cex.main = 0.8)
+title(sub= "Figure 31: Pearson residual plot showing no outliers", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(h = 2, col = "red")
+abline(h= -2, col = "red")
+
+plot(fitted(outq3), Ship3$incidents, ylab = "Observed values", xlab = "Predicted values", main ="Predicted versus observed values", cex.main = 0.8)
+abline(a = 0, b = 1)
+title(sub= "Figure 32: Predicted values plot indicating a good fit", font.sub=3, adj = 0, cex.sub = 0.6)
+```
+
+The half-norm plot (Figure 33) looked adequate, there seemed to be one potential outlier which is outside the line of the plot and might exceed the 2 standard deviations. Other than that the plot looked good with all observations in one line. The log-log plot in Figure 34 looks similar to Figure 28, showing 2 clusters of points.
+
+```{r, echo=F}
+halfnorm(residuals(outq3), main = "Half-norm plot", cex.main = 0.8)
+title(sub= "Figure 33: Half-norm plot not indicating outliers", font.sub=3, adj = 0, cex.sub = 0.6)
+
+plot(log(fitted(outq3)), log((Ship3$incidents-fitted(outq3))^2), xlab=expression(log(hat(mu))), ylab=expression(log((y-hat(mu))^2)), main= "Log-log plot", cex.main = 0.8)
+title(sub= "Figure 34: Log-lop plot showing 2 clusters \nof observations", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(0,1)
+```
+
+The Cook's Distance cut-off point was $D_c= 4/20 = 0.2$. We found 4 observations that exceeded the cut-off point and could have been influential points. Interestingly, these points did not (all) match the four points that exceeded the cut-off point in Analysis 3, suggesting that our fourth model fits certain categories better or worse than our third model, rather than having a global increase in fit.
+
+```{r, echo=F}
+cook_4 <- cooks.distance(outq3)
+sort(cook_4[cook_4 > 0.2], decreasing = T)
+plot(cook_4, ylab = "Cook's Distance", main= "Cook's D outlier plot", cex.main = 0.8)
+title(sub= "Figure 35: Cook's Distance plot showing \nsome influential points", font.sub=3, adj = 0, cex.sub = 0.6)
+abline(h = 0.2, col = "red")
+
+```
+
+## Interpretation 
+
+Compared to the coefficients of Analysis 3, this analysis resulted in similar coefficients with some minor differences (Table 11). The two rather extreme coefficients have gotten even more extreme, whereas the other coefficients have generally gotten lower. 
+```{r, echo=F}
+betas <- outq3$coefficients
+betas[is.na(betas)] <- 0
+T5 <- table(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$operation)
+T5[1,1,1] <- betas[1] # intercept, which is also the reference category
+T5[1,1,2] <- T5[1,1,1] + betas[9]
+# Getting the first column for the first table
+for(i in 2:5){
+  T5[i,1,1] <- betas[1] + betas[i] 
+}
+# Second column first table
+T5[1,2,1] <- T5[1,1,1] + betas[6]
+for(i in 2:5){
+  T5[i,2,1] <- T5[i,1,1] + betas[6] + betas[6+i]
+}
+# Second table
+for(i in 1:5){
+  for(j in 1:2){
+    T5[i,j,2] <- T5[i,j,1] + betas[7]
+  }
+}
+
+#round(T5,2)
+T.5 <-cbind(round(T5[,,1],2),round(T5[,,2],2))
+add_header_above(kable_styling(kbl(T.5, booktabs = T, caption = "Estimated sums of coefficients"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+
+#kable_styling(kbl(round(T5,2)[,,1], booktabs = T, caption = "Estimated beta 1960-1974"), latex_options = "HOLD_position")
+#kable_styling(kbl(round(T5,2)[,,2], booktabs = T, caption = "Estimated beta 1975-1979"), latex_options = "HOLD_position")
+
+```
+
+When we looked at the predicted number of incidents (Table 12), we noticed nothing unusual and all the predicted values seemed be normal. But when we looked at the differences between the predicted and observed values (Table 13), we found something interesting. On the one hand, there were more "correct" predictions now (differences that round to zero) compared to the previous analysis. On the other hand, the predictions that were not correct had much higher residuals. For all three analyses performed before this one, the highest (absolute) residual could be rounded to a 5. Here we had multiple (absolute) residuals larger than that, with the highest value being 19. This suggested that our model did not fit very well after all.  
+Again, the 95% confidence intervals for the predicted values can be found in Appendix A.
+
+```{r, echo=F, include=F}
+ginv4 <- outq3$family$linkinv  ## inverse link function
+prs4 <- predict(outq3, ShipAccidents2, type = "link", se.fit=TRUE)
+ShipAccidents3 <- ShipAccidents2[,1:6]
+ShipAccidents3$predicted <- round(ginv4(prs4[[1]]),4)
+ShipAccidents3$lower <- round(ginv4(prs4[[1]] - 1.96 * prs4[[2]]),4)
+ShipAccidents3$upper <- round(ginv4(prs4[[1]] + 1.96 * prs4[[2]]),4)
+ShipAccidents3[,c(7:9)]
+```
+
+```{r, echo=F}
+table4 <- tapply(ShipAccidents3$predicted, list(ShipAccidents3$type, ShipAccidents3$construct2, ShipAccidents3$operation), mean)
+#as.table(round(table4))
+
+#kable_styling(kbl((round(table4))[,,1], booktabs = T, caption = "Predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((round(table4))[,,2], booktabs = T, caption = "Predicted number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+P5 <- cbind(round(table4[,,1],2),round(table4[,,2],2))
+add_header_above(kable_styling(kbl(P5, booktabs = T, caption = "Predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+
+table_real4 <- tapply(ShipAccidents3$incidents, list(ShipAccidents3$type, ShipAccidents3$construct2, ShipAccidents3$operation), mean)
+#as.table((table_real4 - table4))
+
+D5 <- cbind((table_real4 -table4)[,,1],(table_real4 -table4)[,,2])
+add_header_above(kable_styling(kbl(D5, booktabs = T, caption = "Difference between observed and predicted number of incidents"), latex_options = "HOLD_position"),c(" " = 1, "Operation 1960-1974" =2, "Operation 1975-1979" = 2))
+
+
+#kable_styling(kbl((table_real4 -table4)[,,1], booktabs = T, caption = "Difference observed - predicted number of incidents 1960-1974"),  latex_options = "HOLD_position")
+#kable_styling(kbl((table_real4 -table4)[,,2], booktabs = T, caption = "Difference observed - predicted  number of incidents 1975-1979"), latex_options = "HOLD_position")
+
+```
+
+# Conclusion & Discussion
+In this report we examined the ShipAccidents dataset by using Poisson regression. We tried to explain the number of damage incidents in terms of ship type, the operation period, and the construction period of the ship. Moreover, we investigated the effects of including and excluding influential points, and we examined the trade-off between degrees of freedom and deviance that resulted from reducing the number of factor levels of one of our predictors (and in doing so, categories).  
+Generally, we found that ships of type B have more damage incidents than other ship types, though they also have more service hours. The variation in damage incidents for ships of type B can be explained by construction period. When we look at construction period as a factor with four levels, we see that for ships of type B, those ships constructed between 1965 and 1969 had the most incidents. For the last two analyses, in which construction period only had two levels, we saw that there were more incidents for ships of type B constructed between 1960 and 1969, which is in line with the findings of the first two analyses. We also found that ships constructed after 1969 generally had more incidents when they operated between 1975 and 1979 than between 1960 and 1974. The interactions between operation period and the other variables were not included in every model, though.  
+In all four analyses, the service variable was used as an offset. We also found one significant interaction that all models had in common, which was the interaction between ship type and construction period. In our first and third model, we found no under- or overdispersion, while in the second and fourth model we had to correct for underdispersion by using a quasi-Poisson model. We found good $R^2_{dev}$ values in all our models, varying from 0.68 to 0.98. The Pearson's $\chi^2$ was not significant for our first, second, and fourth model, suggesting these models were a good fit. We found a significant Pearson's $\chi^2$ for our third model. This model also had the lowest $R^2_{Dev}$, although it was still moderately good. When looking at the diagnostics of our models, we found that the third model had the most outliers and influential observations, which reinforces the idea that the model does not fit well. The diagnostics of the other models looked good, with only a few potential outliers or influential points. After removing the influential points, our models (Analyses 2 and 4) showed good fitted values and low residuals and Cook's Distances. A drawback of our study is that we could not compare the analyses statistically, since they use different datasets (because we removed outliers) and/or different distributions (Poisson versus quasi-Poisson). Therefore, we can only compare the models based on our own judgment.   
+The second model seemed to fit best based on the residuals and $R^2_{Dev}$. We found a significant interaction between construction period and operation period in our second model, which we did not find in the other models. By including this interaction into our model, we ended up with few degrees of freedom and a very low residual deviance, which suggest that the model overfitted our data. Unfortunately, we did not have enough observations to split the data into a testing and training set so we could check this. Our small sample size was a serious shortcoming in this study. Besides making us unable to test if our models overfit the data, the sample size also left us with few degrees of freedom and low power.  
+Furthermore, even though we only used three predictors, we had many parameters due to the fact that our predictors are factorial and we included interactions. Even though we are now able to describe ship accidents in terms of ship type, construction period, and operation period, the models including interactions are so complex that their usefulness may be questioned. Additionally, since we found significant interactions and we have a very small dataset, we could have found significant results which were not actually meaningful. This is also called Freedman's Paradox (Freedman, 1983) and is a common occurrence when the number of variables is similar to the number of data points.  
+We tried to deal with this by reducing the number of levels of the construction variable. This resulted in more degrees of freedom and easier interpretation, but it had some drawbacks too. First of all, the fit was undeniably worse as the $R^2_{Dev}$ decreased from 0.98 to 0.68 and the Pearson's $\chi^2$ goodness-of-fit test informed us our new model did not fit adequately (Analysis 3). Additionally, there were many more indications of outliers or influential points compared to our first two analyses. After removing some of these points, the fit increased to an acceptable level, though ($R^2_{Dev}=0.84$, Analysis 4). There still were many points that had a high Cook's Distance, indicating that they were influential points that could have strongly affected the fit of the model. However, the Pearson residuals looked fine. One possible explanation for why there were so many potential influential points is the small sample size and, as an extension of this issue, that most strata of our design only had a single observation.  
+In conclusion, which model is the best depends on how you balance fit and simplicity. The model form Analysis 2 had the highest fit (0.98), but also the most parameters, making interpretation difficult. The last model, from Analysis 4, had a moderately high fit (0.84), but nine parameters fewer. We think that the reduction in fit is worth the gain in degrees of freedom.  
+
+\pagebreak
+# References 
+
+Fox, J. (2015). Applied Regression Analysis and Generalized Linear Models. Thousand Oaks, Canada: SAGE Publications.
+Freedman, David A. (1983). "A Note on Screening Regression Equations". The American Statistician. 37 (2): 152–155. doi:10.1080/00031305.1983.10482729. 
+
+Freedman, David A. (1983). "A Note on Screening Regression Equations". The American Statistician. 37 (2): 152–155. doi:10.1080/00031305.1983.10482729
+
+\pagebreak
+# Appendix A: Confidence Intervals of Predicted Values
+Analysis 1:
+```{r, echo = F, warning=F}
+kbl(ShipTest[,c(6:8)], booktabs = T)
+```
+\pagebreak
+Analysis 2:
+```{r, echo = F, warning=F}
+kbl(ShipTest2[,c(6:8)], booktabs = T)
+```
+\pagebreak
+Analysis 3:
+```{r, echo = F, warning=F}
+kbl(ShipAccidents2[,c(7:9)], booktabs = T)
+```
+\pagebreak
+Analysis 4:
+```{r, echo = F, warning=F}
+kbl(ShipAccidents3[,c(7:9)], booktabs = T)
+```
+
+\pagebreak
+# Appendix B: Additional Interaction Plots
+
+Analysis 2 
+
+```{r,echo=F, warning=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+interaction.plot(Ship_out$type, Ship_out$construction, Ship_out$incidents, main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$construction), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+interaction.plot(Ship_out$type, Ship_out$operation, Ship_out$incidents, main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Operation", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
+
+Analysis 3
+
+```{r, echo=F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+ShipAccidents2$construct2 <- as.factor(ShipAccidents2$construct2)
+interaction.plot(ShipAccidents2$type, ShipAccidents2$construct2, ShipAccidents2$incidents,  main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Construction", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents2$construct2), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+interaction.plot(ShipAccidents2$type, ShipAccidents2$operation, ShipAccidents2$incidents, main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue", "green", "orange"), lwd = 2, trace.label = "Operation", xpd = T, cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
+
+\pagebreak
+Analysis 4
+
+```{r, echo = F}
+knitr::opts_chunk$set(fig.width = 3, fig.height = 3)
+interaction.plot(Ship3$type, Ship3$construct2, Ship3$incidents,  main = "Interaction plot type & construction",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue"), lwd = 2, trace.label = "Construction", xpd = T, cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents2$construct2), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "construction")
+
+interaction.plot(Ship3$type, Ship3$operation, Ship3$incidents,  main = "Interaction plot type & operation",ylab = "Mean of incidents", xlab = "Ship type", col = c("red", "blue"), lwd = 2, trace.label = "Operation", xpd = T,cex.main = 0.8, legend = F)
+legend("topright", legend = levels(ShipAccidents$operation), fill = c("red", "blue", "green", "orange"), ncol = 1, cex = 0.6, title = "operation")
+```
